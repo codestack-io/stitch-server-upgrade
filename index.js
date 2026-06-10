@@ -1,4 +1,6 @@
 require('dotenv').config()
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 const express = require('express');
 const cors = require('cors');
 const app = express();
@@ -334,7 +336,32 @@ app.patch("/allorders/tracking/:id", async (req, res) => {
   res.send(result);
 });
 
+router.get("/products/related/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    // 1. Find current product
+    const currentProduct = await Product.findById(id);
+
+    if (!currentProduct) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    // 2. Find related products (same category, exclude current one)
+    const related = await Product.find({
+      category: currentProduct.category,
+      _id: { $ne: id },
+    }).limit(4);
+
+    res.json({
+      success: true,
+      result: related,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 app.post('/neworder',verifyFBToken, async (req, res) => {
   try {
@@ -350,7 +377,36 @@ app.post('/neworder',verifyFBToken, async (req, res) => {
     res.status(500).send({ message: 'Orders failed' });
   }
 });
+// GET related products by product id
+router.get("/products/related/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    const currentProduct = await Product.findById(id);
+
+    if (!currentProduct) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    const relatedProducts = await Product.find({
+      category: currentProduct.category,
+      _id: { $ne: id }, // exclude current product
+    }).limit(4);
+
+    res.json({
+      success: true,
+      result: relatedProducts,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
     
 app.get('/neworder',verifyFBToken, async (req, res) => {
   const email = req.query.email;
@@ -633,38 +689,113 @@ app.get('/payments',verifyFBToken,async(req,res)=>{
   res.send(result);
 })
   
-      
-//  app.post('/neworder', async (req, res) => {
-//   const {
-//     ProductType,
-//     email,
-//     productName,
-//     productStatus,
-//     firstName,
-//     lastName,
-//     paymentMethod,
-//     orderQuantity,
-//     deliveryAddress,
-//     orderprice,   
-//   } = req.body;
+router.get("/products", async (req, res) => {
+  try {
+    const {
+      search,
+      category,
+      minPrice,
+      maxPrice,
+      rating,
+      sort,
+      page = 1,
+      limit = 8,
+    } = req.query;
 
-//   const order = {
-//     ProductType,
-//     email,
-//     productName,
-//     productStatus,
-//     firstName,
-//     lastName,
-//     paymentMethod,
-//     orderQuantity,
-//     deliveryAddress,
-//     orderprice,   
-//     createdAt: new Date(),
-//   };
+    let query = {};
 
-//   const result = await ordersCollection.insertOne(order);
-//   res.send(result);
-// });
+    // 🔎 SEARCH
+    if (search) {
+      query.productName = {
+        $regex: search,
+        $options: "i",
+      };
+    }
+
+    // 📂 CATEGORY FILTER
+    if (category) {
+      query.category = category;
+    }
+
+    // 💰 PRICE FILTER
+    if (minPrice || maxPrice) {
+      query.price = {};
+      if (minPrice) query.price.$gte = Number(minPrice);
+      if (maxPrice) query.price.$lte = Number(maxPrice);
+    }
+
+    // ⭐ RATING FILTER
+    if (rating) {
+      query.rating = { $gte: Number(rating) };
+    }
+
+    // 📊 SORTING
+    let sortOption = {};
+    if (sort === "lowToHigh") sortOption.price = 1;
+    if (sort === "highToLow") sortOption.price = -1;
+    if (sort === "newest") sortOption.createdAt = -1;
+
+    // 📄 PAGINATION
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const products = await Product.find(query)
+      .sort(sortOption)
+      .skip(skip)
+      .limit(Number(limit));
+
+    const total = await Product.countDocuments(query);
+
+    res.json({
+      success: true,
+      result: products,
+      totalPages: Math.ceil(total / limit),
+      currentPage: Number(page),
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});    
+
+app.post("/register", async (req, res) => {
+  const { email, password, role } = req.body;
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const user = {
+    email,
+    password: hashedPassword,
+    role: role || "user",
+  };
+
+  await usersCollection.insertOne(user);
+
+  res.send({ success: true });
+});
+
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user) return res.status(404).send({ message: "User not found" });
+
+  const isMatch = await bcrypt.compare(password, user.password);
+
+  if (!isMatch)
+    return res.status(401).send({ message: "Invalid password" });
+
+  const token = jwt.sign(
+    { email: user.email, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
+  );
+
+  res.send({ token, user });
+});
 
 
      
@@ -677,13 +808,6 @@ app.get('/payments',verifyFBToken,async(req,res)=>{
 
 
 
-
-    // await client.db("admin").command({ ping: 1 });
-    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  //} finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
-  //}
 
 
 
