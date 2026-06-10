@@ -1,0 +1,5 @@
+.env
+node_modules/
+.vercel/
+
+stitch-tracker-client-firebase-adminsdk-json.json
