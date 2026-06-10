@@ -253,6 +253,67 @@ app.patch('/allorders/:id', async (req, res) => {
   res.send(result);
 });
 
+app.get("/stats", async (req, res) => {
+  try {
+    const productsCount = await modelCollection.countDocuments();
+    const usersCount = await usersCollection.countDocuments();
+    const ordersCount = await ordersCollection.countDocuments();
+    const paymentsCount = await paymentCollection.countDocuments();
+
+    res.send({
+      products: productsCount,
+      users: usersCount,
+      orders: ordersCount,
+      payments: paymentsCount,
+      supportHours: 24, // static business value
+    });
+  } catch (error) {
+    console.error("Stats error:", error);
+    res.status(500).send({ message: "Failed to load stats" });
+  }
+});
+
+app.get("/steps", async (req, res) => {
+  try {
+    res.send([
+      {
+        id: 1,
+        title: "Choose Product",
+        desc: "Select your desired product from our catalog",
+        icon: "🛍️",
+      },
+      {
+        id: 2,
+        title: "Place Order",
+        desc: "Confirm your order with secure checkout",
+        icon: "💳",
+      },
+      {
+        id: 3,
+        title: "Get Delivery",
+        desc: "Receive your product at your doorstep",
+        icon: "🚚",
+      },
+    ]);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load steps" });
+  }
+});
+
+app.get("/brands", async (req, res) => {
+  try {
+    res.send([
+      { id: 1, name: "Nike" },
+      { id: 2, name: "Adidas" },
+      { id: 3, name: "Puma" },
+      { id: 4, name: "Zara" },
+      { id: 5, name: "Gucci" },
+    ]);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load brands" });
+  }
+});
+
 
 app.patch("/allorders/tracking/:id", async (req, res) => {
   const id = req.params.id;
