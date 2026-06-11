@@ -1,8 +1,18 @@
-require('dotenv').config()
+import dotenv from "dotenv";
+
+dotenv.config();
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-const express = require('express');
-const cors = require('cors');
+import express from "express";
+import cors from "cors";
+import Stripe from "stripe";
+import crypto from "crypto";
+import admin from "firebase-admin";
+import serviceAccount from "./stitch-tracker-client-firebase-adminsdk-json.json" with { type: "json" };;
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+
+
+const router = express.Router();
 const app = express();
 app.use(cors()); 
 
@@ -21,20 +31,19 @@ app.use(async (req, res, next) => {
 
 
 
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 console.log("Stripe key loaded:", process.env.STRIPE_SECRET_KEY?.slice(0,10) + "…");
 
 const port = process.env.PORT || 5000
-const crypto = require('crypto');
 
-const admin = require("firebase-admin");
 
-// const serviceAccount = require("./stitch-tracker-client-firebase-adminsdk.json");
+
+
 
 
 
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
-const serviceAccount = JSON.parse(decoded);
+
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
@@ -82,15 +91,6 @@ const verifyFBToken = async (req, res, next) => {
 
   return `GRM-${date}-${orderId}-${random}`;
 };
-
-
-
-
-
-
-
-
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.tdrltck.mongodb.net/?appName=Cluster0`;
 
@@ -518,7 +518,7 @@ app.post('/users', async (req, res) => {
     const newUser = req.body;
 
     // default values
-    newUser.role = newUser.role || 'admin' || 'manager' || 'user';
+    newUser.role = newUser.role || "user";
     newUser.createdAt = new Date();
 
     const exists = await usersCollection.findOne({ email: newUser.email });
@@ -547,46 +547,46 @@ app.get('/users',verifyFBToken,verifyManager,async (req, res) => {
   res.send(result);
 });
 
- app.post('/create-checkout-session',verifyFBToken,verifyAdmin,async(req,res) =>{
-      try{
-       const paymentInfo = req.body;
+app.post('/create-checkout-session', verifyFBToken, async (req, res) => {
+  try {
+    const paymentInfo = req.body;
 
+    const amount = parseInt(paymentInfo.price) * 100;
 
-       const amount = parseInt(paymentInfo.price) * 100;
-      
-     const session = await stripe.checkout.sessions.create({
-         line_items: [
-              {
-                price_data:{
-                   currency: 'usd',
-                   unit_amount: amount,
-                   product_data:{
-                    name :paymentInfo.productName
-                   }
-
-                },
-                
-                quantity: 1,
-              },
-         ],
-         customer_email:paymentInfo.senderEmail,
-        
-          mode: 'payment',
-          metadata:{
-            productId: paymentInfo.id,
-            name:paymentInfo.productName,
+    const session = await stripe.checkout.sessions.create({
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            unit_amount: amount,
+            product_data: {
+              name: paymentInfo.productName,
+            },
           },
-          success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-  cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-       });
-       console.log(session)
-       res.send({url : session.url});
-      } catch(err){
-        console.error("Checkout error:", err);
-        res.status(500).json({error:err.message || "Checkout failed"})
-      }
-       
-     });
+          quantity: 1,
+        },
+      ],
+
+      customer_email: paymentInfo.senderEmail,
+
+      mode: 'payment',
+
+      metadata: {
+        productId: paymentInfo.id,
+        name: paymentInfo.productName,
+      },
+
+      success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+    });
+
+    res.send({ url: session.url });
+
+  } catch (err) {
+    console.error("Checkout error:", err);
+    res.status(500).json({ error: err.message || "Checkout failed" });
+  }
+});
      
    
 
@@ -763,17 +763,42 @@ router.get("/products", async (req, res) => {
 app.post("/register", async (req, res) => {
   const { email, password, role } = req.body;
 
-  const hashedPassword = await bcrypt.hash(password, 10);
+  // ✅ 1. VALIDATION (MUST BE FIRST)
+  if (!email || !password) {
+    return res.status(400).send({ message: "Email and password required" });
+  }
 
-  const user = {
-    email,
-    password: hashedPassword,
-    role: role || "user",
-  };
+  if (password.length < 6) {
+    return res.status(400).send({ message: "Password too short" });
+  }
 
-  await usersCollection.insertOne(user);
+  try {
+    // ✅ 2. Check if user already exists (IMPORTANT BEST PRACTICE)
+    const exists = await usersCollection.findOne({ email });
+    if (exists) {
+      return res.status(409).send({ message: "User already exists" });
+    }
 
-  res.send({ success: true });
+    // ✅ 3. Hash password AFTER validation
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // ✅ 4. Create user object
+    const user = {
+      email,
+      password: hashedPassword,
+      role: role || "user",
+      createdAt: new Date(),
+    };
+
+    // ✅ 5. Save to DB
+    await usersCollection.insertOne(user);
+
+    res.send({ success: true, message: "User registered successfully" });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Server error" });
+  }
 });
 
 app.post("/login", async (req, res) => {
@@ -820,4 +845,4 @@ app.listen(port, () => {
   console.log(`Example app listening on port ${port}`)
 })
 
-module.exports = app;
+export default app;
