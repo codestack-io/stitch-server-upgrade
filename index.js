@@ -17,7 +17,9 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", process.env.CLIENT_URL],
+    origin: [  "http://localhost:5173",
+      "http://localhost:5174",
+      "http://localhost:5175", process.env.CLIENT_URL],
     credentials: true,
   })
 );
@@ -26,14 +28,22 @@ app.use(
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // ===================== FIREBASE ADMIN (SAFE FOR DEPLOY) =====================
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+const decoded = Buffer.from(
+  process.env.FB_SERVICE_KEY,
+  "base64"
+).toString("utf8");
+
+console.log(decoded.slice(0, 100));
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString("utf8")
+);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
 // ===================== MONGODB =====================
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.mongodb.net/?retryWrites=true&w=majority`;
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.tdrltck.mongodb.net/?appName=Cluster0";`;
 
 let db;
 let productsCollection;
@@ -65,7 +75,11 @@ app.use(async (req, res, next) => {
     await connectDB();
     next();
   } catch (err) {
-    res.status(500).send({ message: "DB connection failed" });
+    console.error("MongoDB Error:", err);
+    res.status(500).send({
+      message: "DB connection failed",
+      error: err.message,
+    });
   }
 });
 
@@ -138,6 +152,34 @@ app.get("/products/related/:id", async (req, res) => {
   res.send({ success: true, result: related });
 });
 
+// ===================== STEPS =====================
+
+const steps = [
+  {
+    id: 1,
+    icon: "🧵",
+    title: "Create Order",
+    desc: "Submit your stitching request."
+  },
+  {
+    id: 2,
+    icon: "✂️",
+    title: "Production",
+    desc: "Tailors complete the work."
+  },
+  {
+    id: 3,
+    icon: "📦",
+    title: "Delivery",
+    desc: "Receive your finished order."
+  }
+];
+
+app.get("/steps", (req, res) => {
+  res.send(steps);
+});
+
+
 // ===================== ORDERS =====================
 app.post("/neworder", verifyFBToken, async (req, res) => {
   const order = req.body;
@@ -191,6 +233,23 @@ app.post("/users", async (req, res) => {
 app.get("/users", verifyFBToken, verifyAdmin, async (req, res) => {
   const users = await usersCollection.find().toArray();
   res.send(users);
+});
+
+app.get("/users/:email/role", verifyFBToken, async (req, res) => {
+  const email = req.params.email;
+
+  // Prevent users from checking other users' roles
+  if (email !== req.decoded_email) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
+
+  const user = await usersCollection.findOne({ email });
+
+  if (!user) {
+    return res.status(404).send({ message: "User not found" });
+  }
+
+  res.send({ role: user.role });
 });
 
 // ===================== STRIPE =====================
