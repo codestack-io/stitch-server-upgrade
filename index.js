@@ -10,6 +10,7 @@ import crypto from "crypto";
 import admin from "firebase-admin";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 
+
 const app = express();
 
 // ===================== MIDDLEWARE =====================
@@ -203,15 +204,89 @@ app.get("/neworder", verifyFBToken, async (req, res) => {
 
   res.send(orders);
 });
+app.get("/allorders", verifyFBToken, verifyAdmin, async (req, res) => {
+  const { productStatus } = req.query;
+
+  const query = {};
+
+  if (productStatus) {
+    query.productStatus = productStatus;
+  }
+
+  const orders = await ordersCollection.find(query).toArray();
+
+  res.send(orders);
+});
+
+app.patch("/allorders/:id", verifyFBToken, async (req, res) => {
+  const { status } = req.body;
+
+  const result = await ordersCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $set: {
+        productStatus: status,
+        updatedAt: new Date(),
+      },
+    }
+  );
+
+  res.send(result);
+});
+
+// app.patch(
+//   "/allorders/tracking/:id",
+//   verifyFBToken,
+//   verifyAdmin,
+//   async (req, res) => {
+//     const id = req.params.id;
+//     const trackingData = req.body;
+
+//     const result = await ordersCollection.updateOne(
+//       { _id: new ObjectId(id) },
+//       {
+//         $push: {
+//           tracking: trackingData,
+//         },
+//       }
+//     );
+
+//     res.send(result);
+//   }
+// );
+app.get("/neworder/:id", verifyFBToken, async (req, res) => {
+  const id = req.params.id;
+
+  const order = await ordersCollection.findOne({
+    _id: new ObjectId(id),
+  });
+
+  if (!order) {
+    return res.status(404).send({ message: "Order not found" });
+  }
+
+  res.send(order);
+});
 
 // ===================== STATS =====================
 app.get("/stats", async (req, res) => {
-  const products = await productsCollection.countDocuments();
   const users = await usersCollection.countDocuments();
   const orders = await ordersCollection.countDocuments();
-  const payments = await paymentCollection.countDocuments();
+  const products =  await productsCollection.countDocuments();
+  const approvedOrders = await ordersCollection.countDocuments({
+    productStatus: "Approved",
+  });
 
-  res.send({ products, users, orders, payments });
+  const pendingOrders = await ordersCollection.countDocuments({
+    productStatus: "Suspended",
+  });
+
+  res.send({
+    users,
+    orders,
+    approvedOrders,
+    pendingOrders,
+  });
 });
 
 // ===================== USERS =====================
@@ -257,29 +332,114 @@ app.post("/create-checkout-session", verifyFBToken, async (req, res) => {
   const { productName, price, senderEmail, id } = req.body;
 
   const session = await stripe.checkout.sessions.create({
-    payment_method_types: ["card"],
-    line_items: [
-      {
-        price_data: {
-          currency: "usd",
-          product_data: { name: productName },
-          unit_amount: parseInt(price) * 100,
+     payment_method_types: ["card"],
+  line_items: [
+    {
+      price_data: {
+        currency: "usd",
+        product_data: {
+          name: productName,
         },
-        quantity: 1,
+        unit_amount: parseInt(price) * 100,
       },
-    ],
-    mode: "payment",
-    customer_email: senderEmail,
-
-    metadata: {
-      productId: id,
+      quantity: 1,
     },
+  ],
+  mode: "payment",
+  customer_email: senderEmail,
 
-    success_url: `${process.env.SITE_DOMAIN}/success`,
-    cancel_url: `${process.env.SITE_DOMAIN}/cancel`,
+  metadata: {
+    productId: id,
+  },
+
+
+   success_url: `${process.env.SITE_DOMAIN}/dashboard/success?session_id={CHECKOUT_SESSION_ID}`,
+cancel_url: `${process.env.SITE_DOMAIN}/dashboard/cancel`,
   });
 
   res.send({ url: session.url });
+});
+
+app.patch("/payment-success", verifyFBToken, async (req, res) => {
+  const { session_id } = req.query;
+
+  const session = await stripe.checkout.sessions.retrieve(session_id);
+
+  const transactionId = session.payment_intent;
+  const productId = session.metadata.productId;
+  const trackingId = "TRK-" + Date.now();
+
+  // Update the order
+  await ordersCollection.updateOne(
+  { _id: new ObjectId(productId) },
+  {
+    $set: {
+      paymentStatus: "paid",
+      productStatus: "Approved",
+      transactionId,
+      trackingId,
+      updatedAt: new Date(),
+    },
+  }
+);
+
+  // Save payment history
+  await paymentCollection.insertOne({
+    customerEmail: session.customer_email,
+    amount: session.amount_total / 100,
+    transactionId,
+    trackingId,
+    productId,
+    paymentDate: new Date(),
+  });
+
+  res.send({
+    transactionId,
+    trackingId,
+  });
+});
+
+app.get("/payments", verifyFBToken, async (req, res) => {
+  const email = req.query.email;
+
+  if (email !== req.decoded_email) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
+
+  const payments = await paymentCollection
+    .find({ customerEmail: email })
+    .sort({ paymentDate: -1 })
+    .toArray();
+
+  res.send(payments);
+});
+
+// ===================== TRACKING =====================
+app.patch("/allorders/tracking/:id", verifyFBToken, async (req, res) => {
+  const result = await ordersCollection.updateOne(
+    { _id: new ObjectId(req.params.id) },
+    {
+      $push: {
+        tracking: req.body,
+      },
+    }
+  );
+
+  res.send(result);
+});
+
+app.get("/allorders/tracking/:id", verifyFBToken, async (req, res) => {
+  const order = await ordersCollection.findOne({
+    _id: new ObjectId(req.params.id),
+  });
+
+  if (!order) {
+    return res.status(404).send({
+      message: "Order not found",
+    });
+  }
+
+  res.send(order.tracking || []);
 });
 
 // ===================== ROOT =====================
