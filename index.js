@@ -268,11 +268,12 @@ app.get("/neworder/:id", verifyFBToken, async (req, res) => {
   res.send(order);
 });
 
-// ===================== STATS =====================
 app.get("/stats", async (req, res) => {
   const users = await usersCollection.countDocuments();
   const orders = await ordersCollection.countDocuments();
-  const products =  await productsCollection.countDocuments();
+  const products = await productsCollection.countDocuments();
+  const payments = await paymentCollection.countDocuments();
+
   const approvedOrders = await ordersCollection.countDocuments({
     productStatus: "Approved",
   });
@@ -284,11 +285,12 @@ app.get("/stats", async (req, res) => {
   res.send({
     users,
     orders,
+    products,
+    payments,
     approvedOrders,
     pendingOrders,
   });
 });
-
 // ===================== USERS =====================
 app.post("/users", async (req, res) => {
   const user = req.body;
@@ -329,35 +331,47 @@ app.get("/users/:email/role", verifyFBToken, async (req, res) => {
 
 // ===================== STRIPE =====================
 app.post("/create-checkout-session", verifyFBToken, async (req, res) => {
-  const { productName, price, senderEmail, id } = req.body;
+  try {
+   const { productName, price, senderEmail, orderId } = req.body;
 
-  const session = await stripe.checkout.sessions.create({
-     payment_method_types: ["card"],
-  line_items: [
-    {
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: productName,
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+
+      customer_email: senderEmail,
+
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: productName,
+            },
+            unit_amount: Number(price) * 100,
+          },
+          quantity: 1,
         },
-        unit_amount: parseInt(price) * 100,
-      },
-      quantity: 1,
-    },
-  ],
-  mode: "payment",
-  customer_email: senderEmail,
+      ],
 
-  metadata: {
-    productId: id,
-  },
+     metadata: {
+    orderId,
+},
+      success_url: `${process.env.SITE_DOMAIN}/dashboard/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/dashboard/cancel`,
+    });
 
+    console.log(session.url);
+    console.log(req.body);
+console.log(process.env.SITE_DOMAIN);
 
-   success_url: `${process.env.SITE_DOMAIN}/dashboard/success?session_id={CHECKOUT_SESSION_ID}`,
-cancel_url: `${process.env.SITE_DOMAIN}/dashboard/cancel`,
-  });
+    res.send({
+      url: session.url,
+    });
 
-  res.send({ url: session.url });
+  } catch (err) {
+    console.log(err);
+    res.status(500).send(err.message);
+  }
 });
 
 app.patch("/payment-success", verifyFBToken, async (req, res) => {
@@ -366,22 +380,22 @@ app.patch("/payment-success", verifyFBToken, async (req, res) => {
   const session = await stripe.checkout.sessions.retrieve(session_id);
 
   const transactionId = session.payment_intent;
-  const productId = session.metadata.productId;
+  const orderId = session.metadata.orderId;
   const trackingId = "TRK-" + Date.now();
 
   // Update the order
   await ordersCollection.updateOne(
-  { _id: new ObjectId(productId) },
-  {
-    $set: {
-      paymentStatus: "paid",
-      productStatus: "Approved",
-      transactionId,
-      trackingId,
-      updatedAt: new Date(),
-    },
-  }
-);
+  { _id: new ObjectId(orderId) },
+    {
+      $set: {
+        paymentStatus: "paid",
+        productStatus: "Approved",
+        transactionId,
+        trackingId,
+        updatedAt: new Date(),
+      },
+    }
+  );
 
   // Save payment history
   await paymentCollection.insertOne({
@@ -389,7 +403,7 @@ app.patch("/payment-success", verifyFBToken, async (req, res) => {
     amount: session.amount_total / 100,
     transactionId,
     trackingId,
-    productId,
+    orderId,
     paymentDate: new Date(),
   });
 
